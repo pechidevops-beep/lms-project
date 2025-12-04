@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import api from '../lib/api';
 import Layout from '../components/Layout';
 
-export default function Leaderboard({ user }) {
+export default function Leaderboard({ user, profile }) {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
   const [courseId, setCourseId] = useState('');
@@ -39,11 +39,11 @@ export default function Leaderboard({ user }) {
   };
 
   if (loading) {
-    return <Layout user={user}><div>Loading...</div></Layout>;
+    return <Layout user={user} profile={profile}><div>Loading...</div></Layout>;
   }
 
   return (
-    <Layout user={user}>
+    <Layout user={user} profile={profile}>
       <div className="flex-between mb-20">
         <h2>Leaderboard</h2>
         <select

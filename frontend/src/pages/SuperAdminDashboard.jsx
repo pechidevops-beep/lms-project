@@ -1,28 +1,20 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
 import api from '../lib/api';
 import Layout from '../components/Layout';
 
-export default function AdminDashboard({ user, profile }) {
-  const [courses, setCourses] = useState([]);
+export default function SuperAdminDashboard({ user, profile }) {
+  const [pendingStaff, setPendingStaff] = useState([]);
   const [students, setStudents] = useState([]);
   const [quickTasks, setQuickTasks] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('courses'); // 'courses' or 'quickTasks'
-  const [showCourseModal, setShowCourseModal] = useState(false);
-  const [showTaskModal, setShowTaskModal] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('staff'); // 'staff' or 'quickTasks'
+  const [message, setMessage] = useState(null);
   const [showQuickTaskModal, setShowQuickTaskModal] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [selectedQuickTask, setSelectedQuickTask] = useState(null);
   const [selectedStudents, setSelectedStudents] = useState(new Set());
-  const [selectedCourse, setSelectedCourse] = useState(null);
-  const [newCourse, setNewCourse] = useState({ title: '', description: '', code: '' });
-  const [newTask, setNewTask] = useState({ title: '', description: '', deadline: '', max_points: 100 });
   const [newQuickTask, setNewQuickTask] = useState({ title: '', description: '' });
-  const [searchTerm, setSearchTerm] = useState('');
   const [quickTaskSearchTerm, setQuickTaskSearchTerm] = useState('');
-  const navigate = useNavigate();
 
   useEffect(() => {
     loadData();
@@ -31,84 +23,73 @@ export default function AdminDashboard({ user, profile }) {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [coursesRes, studentsRes, quickTasksRes] = await Promise.all([
-        api.get('/courses'),
-        api.get('/admin/students'),
-        api.get('/tasks/quick'),
-      ]);
-      setCourses(coursesRes.data);
-      setStudents(studentsRes.data);
-      setQuickTasks(quickTasksRes.data || []);
+      setMessage(null);
+      
+      // Load pending staff
+      try {
+        const staffRes = await api.get('/admin/staffs/pending');
+        console.log('Pending staff response:', staffRes.data);
+        setPendingStaff(staffRes.data || []);
+      } catch (error) {
+        console.error('Error loading pending staff:', error);
+        setMessage({ type: 'error', text: `Error loading staff requests: ${error.response?.data?.error || error.message}` });
+        setPendingStaff([]);
+      }
+      
+      // Load students
+      try {
+        const studentsRes = await api.get('/admin/students');
+        setStudents(studentsRes.data || []);
+      } catch (error) {
+        console.error('Error loading students:', error);
+        setStudents([]);
+      }
+      
+      // Load quick tasks (handle gracefully if table doesn't exist)
+      try {
+        const quickTasksRes = await api.get('/tasks/quick');
+        setQuickTasks(quickTasksRes.data || []);
+      } catch (error) {
+        console.warn('Quick tasks table may not exist yet:', error.response?.data?.error || error.message);
+        setQuickTasks([]);
+        // Don't show error for quick tasks if table doesn't exist
+      }
     } catch (error) {
-      console.error('Error loading data:', error);
+      console.error('Unexpected error loading data:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleCreateCourse = async (e) => {
-    e.preventDefault();
+  const loadPendingStaff = async () => {
     try {
-      const res = await api.post('/courses', newCourse);
-      setCourses([...courses, res.data]);
-      setNewCourse({ title: '', description: '', code: '' });
-      setShowCourseModal(false);
+      const res = await api.get('/admin/staffs/pending');
+      setPendingStaff(res.data);
     } catch (error) {
-      alert(error.response?.data?.error || 'Failed to create course');
+      console.error('Error loading pending staff:', error);
     }
   };
 
-  const handleCreateTask = async (e) => {
-    e.preventDefault();
+  const handleApprove = async (staffId) => {
     try {
-      const res = await api.post(`/courses/${selectedCourse.id}/tasks`, {
-        ...newTask,
-        deadline: newTask.deadline ? new Date(newTask.deadline).toISOString() : null,
-      });
-      setNewTask({ title: '', description: '', deadline: '', max_points: 100 });
-      setShowTaskModal(false);
-      setSelectedCourse(null);
-      loadData();
+      await api.post(`/admin/staffs/${staffId}/approve`);
+      setMessage({ type: 'success', text: 'Staff approved successfully!' });
+      loadPendingStaff();
     } catch (error) {
-      alert(error.response?.data?.error || 'Failed to create task');
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to approve staff' });
     }
   };
 
-  const handleDeleteCourse = async (id) => {
-    if (!confirm('Are you sure you want to delete this course?')) return;
+  const handleDecline = async (staffId) => {
+    const reason = prompt('Reason for decline (optional):');
     try {
-      await api.delete(`/courses/${id}`);
-      setCourses(courses.filter(c => c.id !== id));
+      await api.post(`/admin/staffs/${staffId}/decline`, { reason });
+      setMessage({ type: 'success', text: 'Staff request declined' });
+      loadPendingStaff();
     } catch (error) {
-      alert(error.response?.data?.error || 'Failed to delete course');
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to decline staff' });
     }
   };
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    navigate('/login');
-  };
-
-  const filteredCourses = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
-    if (!term) return courses;
-    return courses.filter(course =>
-      course.title.toLowerCase().includes(term) ||
-      course.code.toLowerCase().includes(term) ||
-      course.description?.toLowerCase().includes(term)
-    );
-  }, [courses, searchTerm]);
-
-  const stats = useMemo(() => {
-    const totalCourses = courses.length;
-    const totalStudents = students.length;
-    const avgStudentsPerCourse = totalCourses ? Math.round(totalStudents / totalCourses) : 0;
-    return {
-      totalCourses,
-      totalStudents,
-      avgStudentsPerCourse,
-    };
-  }, [courses, students]);
 
   const filteredQuickTasks = useMemo(() => {
     const term = quickTaskSearchTerm.trim().toLowerCase();
@@ -128,13 +109,13 @@ export default function AdminDashboard({ user, profile }) {
     }
     try {
       await api.post(`/tasks/quick/${selectedQuickTask.id}/assign`, { student_ids: studentIds });
-      alert('Quick task assigned successfully');
+      setMessage({ type: 'success', text: 'Quick task assigned successfully' });
       setShowAssignModal(false);
       setSelectedStudents(new Set());
       setSelectedQuickTask(null);
       loadData();
     } catch (error) {
-      alert(error.response?.data?.error || 'Failed to assign quick task');
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to assign quick task' });
     }
   };
 
@@ -147,13 +128,13 @@ export default function AdminDashboard({ user, profile }) {
     }
     try {
       await api.post(`/tasks/quick/${selectedQuickTask.id}/unassign`, { student_ids: studentIds });
-      alert('Quick task unassigned successfully');
+      setMessage({ type: 'success', text: 'Quick task unassigned successfully' });
       setShowAssignModal(false);
       setSelectedStudents(new Set());
       setSelectedQuickTask(null);
       loadData();
     } catch (error) {
-      alert(error.response?.data?.error || 'Failed to unassign quick task');
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to unassign quick task' });
     }
   };
 
@@ -162,8 +143,9 @@ export default function AdminDashboard({ user, profile }) {
     try {
       await api.delete(`/tasks/quick/${id}`);
       setQuickTasks(quickTasks.filter(t => t.id !== id));
+      setMessage({ type: 'success', text: 'Quick task deleted successfully' });
     } catch (error) {
-      alert(error.response?.data?.error || 'Failed to delete quick task');
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to delete quick task' });
     }
   };
 
@@ -173,69 +155,25 @@ export default function AdminDashboard({ user, profile }) {
 
   return (
     <Layout user={user} profile={profile}>
-      <div className="dashboard-hero">
-        <div>
-          <p className="hero-kicker">Welcome back</p>
-          <h2>{user?.user_metadata?.name || user?.email || 'Admin'}</h2>
-          <p className="hero-subtitle">
-            Manage courses, launch tasks, and keep your learners engaged.
-          </p>
-          <div className="hero-actions">
-            <button className="btn btn-primary" onClick={() => setShowCourseModal(true)}>
-              + Create Course
-            </button>
-            <button
-              className="btn btn-outline"
-              onClick={() => {
-                if (!courses.length) return;
-                setSelectedCourse(courses[0]);
-                setShowTaskModal(true);
-              }}
-              disabled={!courses.length}
-            >
-              + Quick Task
-            </button>
-            <button
-              className="btn btn-outline"
-              onClick={() => setShowQuickTaskModal(true)}
-            >
-              + Create Global Quick Task
-            </button>
-          </div>
-        </div>
-        <div className="hero-highlight">
-          <p>Active Students</p>
-          <h3>{stats.totalStudents}</h3>
-          <span>{stats.avgStudentsPerCourse} avg per course</span>
-        </div>
+      <div className="mb-4">
+        <h2>SuperAdmin Dashboard</h2>
+        <p className="text-muted">Manage staff approval requests, quick tasks, and system administration.</p>
       </div>
 
-      <div className="stats-grid">
-        <div className="stats-card">
-          <p>Total Courses</p>
-          <h3>{stats.totalCourses}</h3>
-          <span>Across all programs</span>
+      {message && (
+        <div className={`alert ${message.type === 'success' ? 'alert-success' : 'alert-danger'} mb-4`}>
+          {message.text}
         </div>
-        <div className="stats-card">
-          <p>Total Students</p>
-          <h3>{stats.totalStudents}</h3>
-          <span>Registered learners</span>
-        </div>
-        <div className="stats-card">
-          <p>Avg Students / Course</p>
-          <h3>{stats.avgStudentsPerCourse}</h3>
-          <span>Engagement health</span>
-        </div>
-      </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', borderBottom: '2px solid #e5e7eb' }}>
         <button
-          className={`btn ${activeTab === 'courses' ? 'btn-primary' : 'btn-secondary'}`}
-          onClick={() => setActiveTab('courses')}
-          style={{ borderRadius: '8px 8px 0 0', borderBottom: activeTab === 'courses' ? '2px solid transparent' : 'none' }}
+          className={`btn ${activeTab === 'staff' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setActiveTab('staff')}
+          style={{ borderRadius: '8px 8px 0 0', borderBottom: activeTab === 'staff' ? '2px solid transparent' : 'none' }}
         >
-          Courses
+          Staff Approval
         </button>
         <button
           className={`btn ${activeTab === 'quickTasks' ? 'btn-primary' : 'btn-secondary'}`}
@@ -246,71 +184,53 @@ export default function AdminDashboard({ user, profile }) {
         </button>
       </div>
 
-      {activeTab === 'courses' && (
-        <>
-          <div className="section-header">
-            <div>
-              <h3>Active Courses</h3>
-              <p>Curate lessons, view tasks, and watch submissions roll in.</p>
-            </div>
-            <div className="section-actions">
-              <input
-                type="text"
-                placeholder="Search by course or code..."
-                className="search-input"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="row g-4">
-            {filteredCourses.map(course => (
-              <div key={course.id} className="col-12 col-md-6 col-xl-4">
-                <div className="card course-card h-100">
-                  <div className="course-code-chip">#{course.code}</div>
-                  <div className="course-card__content">
-                    <div>
-                      <h3>{course.title}</h3>
-                      {course.description ? (
-                        <p className="course-description">{course.description}</p>
-                      ) : (
-                        <p className="course-description muted">No description provided</p>
-                      )}
-                    </div>
-                    <div className="course-actions">
-                      <button
-                        className="btn btn-secondary ghost"
-                        onClick={() => {
-                          setSelectedCourse(course);
-                          setShowTaskModal(true);
-                        }}
-                      >
-                        Add Task
-                      </button>
-                      <button
-                        className="btn btn-danger ghost"
-                        onClick={() => handleDeleteCourse(course.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                  <Link to={`/admin/courses/${course.id}`} className="btn btn-primary full-width">
-                    View Details
-                  </Link>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {!filteredCourses.length && (
-            <div className="empty-state">
-              <h3>No courses match that filter</h3>
-              <p>Try adjusting your search or create a new course</p>
+      {activeTab === 'staff' && (
+        <div className="card">
+          <h3 className="mb-3">Pending Staff Approval Requests</h3>
+          {pendingStaff.length === 0 ? (
+            <p className="text-muted">No pending staff requests.</p>
+          ) : (
+            <div className="table-responsive">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Staff ID</th>
+                    <th>Department</th>
+                    <th>Requested</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingStaff.map((staff) => (
+                    <tr key={staff.id}>
+                      <td>{staff.display_name || 'N/A'}</td>
+                      <td>{staff.email}</td>
+                      <td>{staff.staff_id || 'N/A'}</td>
+                      <td>{staff.dept || 'N/A'}</td>
+                      <td>{new Date(staff.created_at).toLocaleDateString()}</td>
+                      <td>
+                        <button
+                          className="btn btn-success btn-sm me-2"
+                          onClick={() => handleApprove(staff.id)}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleDecline(staff.id)}
+                        >
+                          Decline
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
-        </>
+        </div>
       )}
 
       {activeTab === 'quickTasks' && (
@@ -383,111 +303,7 @@ export default function AdminDashboard({ user, profile }) {
         </>
       )}
 
-      {/* Course Modal */}
-      {showCourseModal && (
-        <div className="modal-overlay" onClick={() => setShowCourseModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3>Create Course</h3>
-            <form onSubmit={handleCreateCourse}>
-              <div className="form-group">
-                <label>Title</label>
-                <input
-                  type="text"
-                  className="input"
-                  value={newCourse.title}
-                  onChange={(e) => setNewCourse({ ...newCourse, title: e.target.value })}
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>Description</label>
-                <textarea
-                  className="input"
-                  rows="4"
-                  value={newCourse.description}
-                  onChange={(e) => setNewCourse({ ...newCourse, description: e.target.value })}
-                />
-              </div>
-              <div className="form-group">
-                <label>Join Code (leave empty for auto-generate)</label>
-                <input
-                  type="text"
-                  className="input"
-                  value={newCourse.code}
-                  onChange={(e) => setNewCourse({ ...newCourse, code: e.target.value })}
-                />
-              </div>
-              <div className="flex" style={{ justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
-                <button type="button" className="btn btn-secondary" onClick={() => setShowCourseModal(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary">
-                  Create
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Task Modal */}
-      {showTaskModal && selectedCourse && (
-        <div className="modal-overlay" onClick={() => setShowTaskModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3>Create Task for {selectedCourse.title}</h3>
-            <form onSubmit={handleCreateTask}>
-              <div className="form-group">
-                <label>Title</label>
-                <input
-                  type="text"
-                  className="input"
-                  value={newTask.title}
-                  onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>Description</label>
-                <textarea
-                  className="input"
-                  rows="4"
-                  value={newTask.description}
-                  onChange={(e) => setNewTask({ ...newTask, description: e.target.value })}
-                />
-              </div>
-              <div className="form-group">
-                <label>Deadline</label>
-                <input
-                  type="datetime-local"
-                  className="input"
-                  value={newTask.deadline}
-                  onChange={(e) => setNewTask({ ...newTask, deadline: e.target.value })}
-                />
-              </div>
-              <div className="form-group">
-                <label>Max Points</label>
-                <input
-                  type="number"
-                  className="input"
-                  value={newTask.max_points}
-                  onChange={(e) => setNewTask({ ...newTask, max_points: parseInt(e.target.value) })}
-                  min="1"
-                />
-              </div>
-              <div className="flex" style={{ justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
-                <button type="button" className="btn btn-secondary" onClick={() => setShowTaskModal(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary">
-                  Create
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Quick Task Modal (global quick tasks) */}
+      {/* Quick Task Modal */}
       {showQuickTaskModal && (
         <div className="modal-overlay" onClick={() => setShowQuickTaskModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -500,7 +316,7 @@ export default function AdminDashboard({ user, profile }) {
                 setShowQuickTaskModal(false);
                 loadData();
               } catch (err) {
-                alert(err.response?.data?.error || 'Failed to create quick task');
+                setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to create quick task' });
               }
             }}>
               <div className="form-group">

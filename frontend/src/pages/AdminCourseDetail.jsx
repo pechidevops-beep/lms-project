@@ -5,12 +5,15 @@ import Layout from '../components/Layout';
 
 const isImage = (url = '') => /\.(png|jpe?g|gif|webp|svg)$/i.test(url);
 
-export default function AdminCourseDetail({ user }) {
+export default function AdminCourseDetail({ user, profile }) {
   const { courseId } = useParams();
   const [course, setCourse] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [submissions, setSubmissions] = useState({});
   const [enrollments, setEnrollments] = useState([]);
+  const [selectedStudents, setSelectedStudents] = useState(new Set());
+  const [availableQuickTasks, setAvailableQuickTasks] = useState([]);
+  const [selectedQuickTask, setSelectedQuickTask] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -24,9 +27,14 @@ export default function AdminCourseDetail({ user }) {
         api.get(`/courses/${courseId}/tasks`),
         api.get(`/courses/${courseId}/enrollments`)
       ]);
+      // also load quick tasks
+      const [quickRes] = await Promise.all([
+        api.get('/tasks/quick')
+      ]);
       setCourse(courseRes);
       setTasks(tasksRes.data);
       setEnrollments(enrollmentsRes.data || []);
+      setAvailableQuickTasks(quickRes.data || []);
 
       // Load submissions for each task
       const submissionsData = {};
@@ -56,11 +64,11 @@ export default function AdminCourseDetail({ user }) {
   };
 
   if (loading) {
-    return <Layout user={user}><div>Loading...</div></Layout>;
+    return <Layout user={user} profile={profile}><div>Loading...</div></Layout>;
   }
 
   return (
-    <Layout user={user}>
+    <Layout user={user} profile={profile}>
       <Link to="/admin" className="btn btn-secondary" style={{ marginBottom: '20px' }}>
         ← Back to Dashboard
       </Link>
@@ -70,11 +78,48 @@ export default function AdminCourseDetail({ user }) {
       <div className="card" style={{ marginBottom: '25px' }}>
         <div className="flex-between">
           <h3>Enrolled Students ({enrollments.length})</h3>
+          <div>
+            <select value={selectedQuickTask || ''} onChange={(e) => setSelectedQuickTask(e.target.value || null)}>
+              <option value="">Select Quick Task</option>
+              {availableQuickTasks.map(q => (
+                <option key={q.id} value={q.id}>{q.title}</option>
+              ))}
+            </select>
+            <button
+              className="btn btn-primary"
+              onClick={async () => {
+                if (!selectedQuickTask) return alert('Select a quick task');
+                const ids = Array.from(selectedStudents);
+                try {
+                  await api.post(`/tasks/quick/${selectedQuickTask}/assign`, { student_ids: ids });
+                  alert('Assigned quick task to selected students');
+                } catch (err) {
+                  alert(err.response?.data?.error || 'Failed to assign');
+                }
+              }}
+              style={{ marginLeft: '10px' }}
+            >Assign</button>
+            <button
+              className="btn btn-secondary"
+              onClick={async () => {
+                if (!selectedQuickTask) return alert('Select a quick task');
+                const ids = Array.from(selectedStudents);
+                try {
+                  await api.post(`/tasks/quick/${selectedQuickTask}/unassign`, { student_ids: ids });
+                  alert('Unassigned quick task from selected students');
+                } catch (err) {
+                  alert(err.response?.data?.error || 'Failed to unassign');
+                }
+              }}
+              style={{ marginLeft: '10px' }}
+            >Unassign</button>
+          </div>
         </div>
         {enrollments.length ? (
           <table className="table" style={{ marginTop: '15px' }}>
             <thead>
               <tr>
+                <th></th>
                 <th>Name</th>
                 <th>Student ID</th>
                 <th>Department</th>
@@ -85,6 +130,18 @@ export default function AdminCourseDetail({ user }) {
             <tbody>
               {enrollments.map(student => (
                 <tr key={student.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedStudents.has(student.id)}
+                      onChange={(e) => {
+                        const copy = new Set(selectedStudents);
+                        if (e.target.checked) copy.add(student.id);
+                        else copy.delete(student.id);
+                        setSelectedStudents(copy);
+                      }}
+                    />
+                  </td>
                   <td>{student.name || student.email}</td>
                   <td>{student.student_id || '—'}</td>
                   <td>{student.department || '—'}</td>

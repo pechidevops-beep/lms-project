@@ -1,10 +1,17 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 
-export default function Layout({ user, children }) {
+export default function Layout({ user, profile, children }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const isAdmin = user?.user_metadata?.is_admin === true;
+  
+  // Get role from profile first, then fallback to user metadata
+  const userRole = profile?.role || user?.user_metadata?.role || 'student';
+  const isAdmin = ['superadmin', 'admin', 'staff'].includes(userRole);
+  const isSuperAdmin = userRole === 'superadmin';
+  
+  // Determine dashboard route based on role
+  const dashboardRoute = isSuperAdmin ? '/superadmin' : isAdmin ? '/admin' : '/student';
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -17,7 +24,10 @@ export default function Layout({ user, children }) {
         <div className="header-content">
           <h1>LMS</h1>
           <nav>
-            <Link to={isAdmin ? '/admin' : '/student'} className={location.pathname.includes('dashboard') || location.pathname === '/admin' || location.pathname === '/student' ? 'active' : ''}>
+            <Link 
+              to={dashboardRoute} 
+              className={location.pathname === '/admin' || location.pathname === '/superadmin' || location.pathname === '/student' ? 'active' : ''}
+            >
               Dashboard
             </Link>
             <Link to="/leaderboard" className={location.pathname === '/leaderboard' ? 'active' : ''}>

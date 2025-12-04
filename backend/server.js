@@ -6,6 +6,11 @@ import multer from 'multer';
 import { createTransport } from 'nodemailer';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import authRoutes from './routes/auth.js';
+import adminRoutes from './routes/admin.js';
+import staffRoutes from './routes/staff.js';
+import tasksRoutes from './routes/tasks.js';
+import { authenticate, getUserProfile, canAccessCourse } from './middleware.js';
 
 dotenv.config();
 
@@ -28,6 +33,62 @@ if (!supabaseUrl || !supabaseServiceKey || !supabaseAnonKey) {
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const supabaseClient = createClient(supabaseUrl, supabaseAnonKey);
 const adminMasterKey = process.env.ADMIN_MASTER_KEY;
+
+// Ensure a default superadmin exists (optional via env variables)
+async function ensureDefaultSuperAdmin() {
+  const defaultEmail = process.env.SUPERADMIN_DEFAULT_EMAIL;
+  const defaultPassword = process.env.SUPERADMIN_DEFAULT_PASSWORD;
+
+  if (!defaultEmail || !defaultPassword) {
+    return;
+  }
+
+  try {
+    const { data: existing } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('role', 'superadmin')
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      return;
+    }
+
+    const displayName = process.env.SUPERADMIN_DISPLAY_NAME || 'Super Admin';
+    const department = process.env.SUPERADMIN_DEPARTMENT || null;
+
+    const { data: authData, error: createError } = await supabase.auth.admin.createUser({
+      email: defaultEmail,
+      password: defaultPassword,
+      email_confirm: true,
+      user_metadata: {
+        role: 'superadmin',
+        display_name: displayName
+      }
+    });
+
+    if (createError) {
+      console.error('Failed to create default superadmin:', createError.message);
+      return;
+    }
+
+    await supabase.from('profiles').upsert({
+      id: authData.user.id,
+      email: defaultEmail,
+      display_name: displayName,
+      role: 'superadmin',
+      dept: department,
+      points: 0
+    }, {
+      onConflict: 'id'
+    });
+
+    console.log(`Default superadmin created with email ${defaultEmail}`);
+  } catch (error) {
+    console.error('Error ensuring default superadmin:', error.message);
+  }
+}
 
 // Middleware
 app.use(cors({
@@ -55,7 +116,7 @@ const emailTransporter = process.env.SMTP_HOST ? createTransport({
   }
 }) : null;
 
-// Helper: Get user from token
+// Helper: Get user from token (legacy support)
 async function getUserFromToken(req) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) return null;
@@ -65,10 +126,12 @@ async function getUserFromToken(req) {
   return user;
 }
 
-// Helper: Check if user is admin
+// Helper: Check if user is admin (legacy support - checks profile)
 async function isAdmin(user) {
   if (!user) return false;
-  return user.user_metadata?.is_admin === true;
+  const profile = await getUserProfile(user.id);
+  if (!profile) return false;
+  return ['superadmin', 'admin', 'staff'].includes(profile.role);
 }
 
 // Helper: Create audit log
@@ -108,74 +171,28 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Auth routes (mostly handled by Supabase client-side, but we can add server-side helpers)
-app.post('/api/auth/signup', async (req, res) => {
-  try {
-    const {
-      email,
-      password,
-      role,
-      name,
-      department,
-      year,
-      staffId,
-      studentId,
-      adminAccessKey
-    } = req.body;
+// Auth routes - new multi-role system
+app.use('/api/auth', authRoutes);
 
-    if (!email || !password || !role || !name) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
+// Admin routes - staff approval and management
+app.use('/api/admin', adminRoutes);
 
-    const normalizedRole = role === 'admin' ? 'admin' : 'student';
-    const metadata = {
-      is_admin: normalizedRole === 'admin',
-      role: normalizedRole,
-      name,
-      department: department || null,
-    };
+// Staff routes - course and student management
+app.use('/api/staff', staffRoutes);
 
-    if (normalizedRole === 'admin') {
-      if (!process.env.ADMIN_MASTER_KEY) {
-        return res.status(500).json({ error: 'Admin master key not configured' });
-      }
-      if (!adminAccessKey || adminAccessKey !== process.env.ADMIN_MASTER_KEY) {
-        return res.status(403).json({ error: 'Invalid admin access key' });
-      }
-      if (!staffId) {
-        return res.status(400).json({ error: 'Staff ID is required for admins' });
-      }
-      metadata.staff_id = staffId;
-    } else {
-      if (!studentId || !year) {
-        return res.status(400).json({ error: 'Student ID and year are required for students' });
-      }
-      metadata.student_id = studentId;
-      metadata.year = year;
-    }
+// Tasks routes (quick tasks and assignments)
+app.use('/api/tasks', tasksRoutes);
 
-    const { data, error } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: metadata
-    });
-
-    if (error) {
-      return res.status(400).json({ error: error.message });
-    }
-
-    await createAuditLog(data.user.id, 'user_registered', 'user', data.user.id, { role: normalizedRole });
-    res.json({ user: data.user });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
+// Legacy validate-admin route (redirects to new endpoint)
 app.post('/api/auth/validate-admin', async (req, res) => {
   try {
     const user = await getUserFromToken(req);
-    if (!user || !(await isAdmin(user))) {
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const profile = await getUserProfile(user.id);
+    if (!profile || !['superadmin', 'admin', 'staff'].includes(profile.role)) {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
@@ -899,35 +916,68 @@ app.get('/api/audit-logs', async (req, res) => {
   }
 });
 
-// Profile update
-app.put('/api/profile', async (req, res) => {
+// Get current user profile
+app.get('/api/profile', authenticate, async (req, res) => {
   try {
-    const user = await getUserFromToken(req);
-    if (!user) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const { name, email } = req.body;
-    const updateData = {};
-
-    if (name) {
-      updateData.user_metadata = { ...user.user_metadata, name };
-    }
-
-    if (email) {
-      updateData.email = email;
-    }
-
-    const { data, error } = await supabase.auth.admin.updateUserById(user.id, updateData);
-
-    if (error) throw error;
-
-    await createAuditLog(user.id, 'profile_updated', 'user', user.id);
-    res.json(data.user);
+    res.json(req.profile);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Profile update
+app.put('/api/profile', authenticate, async (req, res) => {
+  try {
+    const {
+      display_name,
+      email,
+      dept,
+      timezone,
+      notifications,
+      profile_url,
+      theme,
+      language,
+      date_format,
+      email_notifications,
+      auto_save,
+      compact_mode
+    } = req.body;
+    const updateData = {};
+
+    if (display_name !== undefined) updateData.display_name = display_name;
+    if (dept !== undefined) updateData.dept = dept;
+    if (timezone !== undefined) updateData.timezone = timezone;
+    if (notifications !== undefined) updateData.notifications = notifications;
+    if (profile_url !== undefined) updateData.profile_url = profile_url;
+    if (theme !== undefined) updateData.theme = theme;
+    if (language !== undefined) updateData.language = language;
+    if (date_format !== undefined) updateData.date_format = date_format;
+    if (email_notifications !== undefined) updateData.email_notifications = email_notifications;
+    if (auto_save !== undefined) updateData.auto_save = auto_save;
+    if (compact_mode !== undefined) updateData.compact_mode = compact_mode;
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .update(updateData)
+      .eq('id', req.profile.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Update auth email if changed
+    if (email && email !== req.profile.email) {
+      await supabase.auth.admin.updateUserById(req.profile.id, { email });
+    }
+
+    await createAuditLog(req.profile.id, 'profile_updated', 'user', req.profile.id);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+ensureDefaultSuperAdmin();
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

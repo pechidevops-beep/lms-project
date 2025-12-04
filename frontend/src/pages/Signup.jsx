@@ -5,42 +5,64 @@ import './Auth.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
 
+const themeOptions = [
+  { id: 'classic', label: 'Classic' },
+  { id: 'midnight', label: 'Black & White' },
+  { id: 'crimson', label: 'Red & Black' },
+];
+
 export default function Signup() {
   const [role, setRole] = useState('student');
-  const [name, setName] = useState('');
+  const [theme, setTheme] = useState('classic');
+  const [displayName, setDisplayName] = useState('');
   const [department, setDepartment] = useState('');
-  const [year, setYear] = useState('');
+  const [badge, setBadge] = useState('');
   const [studentId, setStudentId] = useState('');
   const [staffId, setStaffId] = useState('');
-  const [adminAccessKey, setAdminAccessKey] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState('');
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setSuccess('');
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/auth/signup`, {
+      let endpoint = '';
+      let body = {};
+
+      if (role === 'student') {
+        endpoint = `${API_URL}/auth/signup/student`;
+        body = {
+          email,
+          password,
+          display_name: displayName,
+          dept: department,
+          student_id: studentId,
+          badge: badge || null
+        };
+      } else {
+        endpoint = `${API_URL}/auth/signup/staff`;
+        body = {
+          email,
+          password,
+          display_name: displayName,
+          dept: department,
+          staff_id: staffId
+        };
+      }
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          role,
-          name,
-          department,
-          year: role === 'student' ? year : null,
-          studentId: role === 'student' ? studentId : null,
-          staffId: role === 'admin' ? staffId : null,
-          adminAccessKey: role === 'admin' ? adminAccessKey : null,
-          email,
-          password,
-        }),
+        body: JSON.stringify(body),
       });
 
       const data = await response.json();
@@ -49,19 +71,35 @@ export default function Signup() {
         throw new Error(data.error || 'Failed to sign up');
       }
 
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      // For students and admins, auto-login
+      if (role === 'student') {
+        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
 
-      if (signInError) throw signInError;
+        if (signInError) throw signInError;
 
-      if (signInData.session?.access_token) {
-        localStorage.setItem('supabase.auth.token', signInData.session.access_token);
+        if (signInData.session?.access_token) {
+          localStorage.setItem('supabase.auth.token', signInData.session.access_token);
+        }
+
+        // Get profile to determine redirect
+        const profileRes = await fetch(`${API_URL}/profile`, {
+          headers: {
+            'Authorization': `Bearer ${signInData.session.access_token}`
+          }
+        });
+        const profile = await profileRes.json();
+        
+        navigate('/student');
+      } else {
+        // Staff signup - show success message, don't auto-login
+        setSuccess(data.message || 'Staff signup request submitted. Awaiting approval from SuperAdmin.');
+        setTimeout(() => {
+          navigate('/login');
+        }, 3000);
       }
-
-      const isAdmin = signInData.user?.user_metadata?.is_admin;
-      navigate(isAdmin ? '/admin' : '/student');
     } catch (err) {
       setError(err.message || 'Failed to sign up');
     } finally {
@@ -70,10 +108,22 @@ export default function Signup() {
   };
 
   return (
-    <div className="auth-container">
-      <div className="auth-card wide">
+    <div className={`auth-container theme-${theme}`}>
+      <div className={`auth-card wide theme-${theme}`}>
+        <div className="theme-toggle">
+          {themeOptions.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              className={`theme-pill ${theme === opt.id ? 'active' : ''}`}
+              onClick={() => setTheme(opt.id)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
         <h2>Create Account</h2>
-        <p className="auth-subtitle">Tell us who you are so we can prepare the right workspace.</p>
+        <p className="auth-subtitle">Select your role and provide the required information.</p>
         <form onSubmit={handleSubmit} className="auth-grid">
           <div className="form-group span-2">
             <label>Registering as</label>
@@ -81,16 +131,24 @@ export default function Signup() {
               <button
                 type="button"
                 className={role === 'student' ? 'role-option active' : 'role-option'}
-                onClick={() => setRole('student')}
+                onClick={() => {
+                  setRole('student');
+                  setError('');
+                  setSuccess('');
+                }}
               >
                 Student
               </button>
               <button
                 type="button"
-                className={role === 'admin' ? 'role-option active' : 'role-option'}
-                onClick={() => setRole('admin')}
+                className={role === 'staff' ? 'role-option active' : 'role-option'}
+                onClick={() => {
+                  setRole('staff');
+                  setError('');
+                  setSuccess('');
+                }}
               >
-                Admin / Staff
+                Staff
               </button>
             </div>
           </div>
@@ -100,9 +158,10 @@ export default function Signup() {
             <input
               type="text"
               className="input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
               required
+              placeholder="Your full name"
             />
           </div>
 
@@ -120,24 +179,24 @@ export default function Signup() {
           {role === 'student' ? (
             <>
               <div className="form-group">
-                <label>Student ID</label>
+                <label>Student Registration Number</label>
                 <input
                   type="text"
                   className="input"
                   value={studentId}
                   onChange={(e) => setStudentId(e.target.value)}
                   required
+                  placeholder="e.g., CS2023001"
                 />
               </div>
               <div className="form-group">
-                <label>Year</label>
+                <label>Year Badge (e.g., 2023-2027)</label>
                 <input
                   type="text"
                   className="input"
-                  value={year}
-                  onChange={(e) => setYear(e.target.value)}
-                  placeholder="e.g., 3rd Year"
-                  required
+                  value={badge}
+                  onChange={(e) => setBadge(e.target.value)}
+                  placeholder="e.g., 2023-2027"
                 />
               </div>
             </>
@@ -151,28 +210,13 @@ export default function Signup() {
                   value={staffId}
                   onChange={(e) => setStaffId(e.target.value)}
                   required
+                  placeholder="Your staff identification number"
                 />
               </div>
-              <div className="form-group">
-                <label>Department Year/Batch</label>
               <div className="form-group span-2">
-                <label>Admin Access Key</label>
-                <input
-                  type="password"
-                  className="input"
-                  value={adminAccessKey}
-                  onChange={(e) => setAdminAccessKey(e.target.value)}
-                  placeholder="Enter the shared admin password"
-                  required
-                />
-              </div>
-                <input
-                  type="text"
-                  className="input"
-                  value={year}
-                  onChange={(e) => setYear(e.target.value)}
-                  placeholder="Optional"
-                />
+                <div className="info-box">
+                  <p><strong>Note:</strong> Staff accounts require SuperAdmin approval. You'll receive an email once your account is approved.</p>
+                </div>
               </div>
             </>
           )}
@@ -185,6 +229,7 @@ export default function Signup() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              placeholder="your.email@institute.edu"
             />
           </div>
 
@@ -197,12 +242,19 @@ export default function Signup() {
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={6}
+              placeholder="Minimum 6 characters"
             />
           </div>
 
           {error && (
             <div className="error-message span-2">
               {error}
+            </div>
+          )}
+
+          {success && (
+            <div className="success-message span-2">
+              {success}
             </div>
           )}
 
