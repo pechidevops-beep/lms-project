@@ -4,9 +4,41 @@ import { supabase } from '../lib/supabase';
 import api from '../lib/api';
 import Layout from '../components/Layout';
 
+// Component to make links clickable in task descriptions
+const LinkifyDescription = ({ text }) => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const parts = text.split(urlRegex);
+  
+  return (
+    <span>
+      {parts.map((part, index) => {
+        if (part.match(urlRegex)) {
+          return (
+            <a
+              key={index}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#3b82f6', textDecoration: 'underline', wordBreak: 'break-all' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                window.open(part, '_blank');
+              }}
+            >
+              {part}
+            </a>
+          );
+        }
+        return <span key={index}>{part}</span>;
+      })}
+    </span>
+  );
+};
+
 export default function AdminDashboard({ user, profile }) {
   const [courses, setCourses] = useState([]);
   const [students, setStudents] = useState([]);
+  const [staff, setStaff] = useState([]);
   const [quickTasks, setQuickTasks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('courses'); // 'courses' or 'quickTasks'
@@ -14,6 +46,10 @@ export default function AdminDashboard({ user, profile }) {
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [showQuickTaskModal, setShowQuickTaskModal] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showStudentsModal, setShowStudentsModal] = useState(false);
+  const [showStaffModal, setShowStaffModal] = useState(false);
+  const [showUnlockRequestsModal, setShowUnlockRequestsModal] = useState(false);
+  const [unlockRequests, setUnlockRequests] = useState([]);
   const [selectedQuickTask, setSelectedQuickTask] = useState(null);
   const [selectedStudents, setSelectedStudents] = useState(new Set());
   const [selectedCourse, setSelectedCourse] = useState(null);
@@ -24,21 +60,70 @@ export default function AdminDashboard({ user, profile }) {
   const [quickTaskSearchTerm, setQuickTaskSearchTerm] = useState('');
   const navigate = useNavigate();
 
+  // Helper: Check if user can modify a course (is creator or superadmin)
+  const canModifyCourse = (course) => {
+    if (!course || !user) return false;
+    // Superadmin can modify any course
+    if (profile?.role === 'superadmin') return true;
+    // Staff can only modify courses they created
+    return course.created_by === user.id;
+  };
+
   useEffect(() => {
     loadData();
   }, []);
 
+  // Map unlock requests by course for quick lookup per course card
+  const coursePendingMap = useMemo(() => {
+    const map = {};
+    (unlockRequests || []).forEach((req) => {
+      const courseId = req.task?.course_id;
+      if (!courseId) return;
+      if (!map[courseId]) map[courseId] = [];
+      map[courseId].push(req);
+    });
+    return map;
+  }, [unlockRequests]);
+
+  const handleUpdateUnlockRequest = async (requestId, status) => {
+    try {
+      await api.put(`/tasks/unlock-requests/${requestId}`, { status });
+      // Optimistically remove from local pending list; loadData will sync
+      setUnlockRequests(prev => prev.filter(r => r.id !== requestId));
+      await loadData();
+    } catch (error) {
+      alert(error.response?.data?.error || `Failed to ${status} request`);
+    }
+  };
+
   const loadData = async () => {
     try {
       setLoading(true);
-      const [coursesRes, studentsRes, quickTasksRes] = await Promise.all([
-        api.get('/courses'),
-        api.get('/admin/students'),
-        api.get('/tasks/quick'),
+      const coursePromise = api.get('/courses');
+      const studentsPromise = api.get('/admin/students');
+      const quickPromise = api.get('/tasks/quick');
+      const staffPromise =
+        profile?.role === 'admin' || profile?.role === 'superadmin'
+          ? api.get('/admin/staffs')
+          : null;
+      const unlockPromise =
+        profile?.role === 'admin' || profile?.role === 'staff'
+          ? api.get('/tasks/unlock-requests?status=pending').catch(() => ({ data: [] }))
+          : null;
+
+      const [courseRes, studentsRes, quickRes, staffRes, unlockRes] = await Promise.all([
+        coursePromise,
+        studentsPromise,
+        quickPromise,
+        staffPromise,
+        unlockPromise
       ]);
-      setCourses(coursesRes.data);
-      setStudents(studentsRes.data);
-      setQuickTasks(quickTasksRes.data || []);
+
+      setCourses(courseRes?.data || []);
+      setStudents(studentsRes?.data || []);
+      setQuickTasks(quickRes?.data || []);
+      if (staffRes) setStaff(staffRes.data || []);
+      if (unlockRes) setUnlockRequests(unlockRes.data || []);
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
@@ -216,17 +301,44 @@ export default function AdminDashboard({ user, profile }) {
           <h3>{stats.totalCourses}</h3>
           <span>Across all programs</span>
         </div>
-        <div className="stats-card">
+        <div 
+          className="stats-card" 
+          style={{ cursor: 'pointer' }}
+          onClick={() => setShowStudentsModal(true)}
+        >
           <p>Total Students</p>
           <h3>{stats.totalStudents}</h3>
-          <span>Registered learners</span>
+          <span>Click to view registered learners</span>
         </div>
         <div className="stats-card">
           <p>Avg Students / Course</p>
           <h3>{stats.avgStudentsPerCourse}</h3>
           <span>Engagement health</span>
         </div>
+        {(profile?.role === 'admin' || profile?.role === 'superadmin') && (
+          <div 
+            className="stats-card" 
+            style={{ cursor: 'pointer' }}
+            onClick={() => setShowStaffModal(true)}
+          >
+            <p>Total Staff</p>
+            <h3>{staff.length}</h3>
+            <span>Click to view registered staff</span>
+          </div>
+        )}
+        {(profile?.role === 'admin' || profile?.role === 'staff') && unlockRequests.length > 0 && (
+          <div 
+            className="stats-card" 
+            style={{ cursor: 'pointer', border: '2px solid #f59e0b' }}
+            onClick={() => setShowUnlockRequestsModal(true)}
+          >
+            <p>Pending Unlock Requests</p>
+            <h3>{unlockRequests.length}</h3>
+            <span>Click to review requests</span>
+          </div>
+        )}
       </div>
+
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', borderBottom: '2px solid #e5e7eb' }}>
@@ -278,23 +390,64 @@ export default function AdminDashboard({ user, profile }) {
                         <p className="course-description muted">No description provided</p>
                       )}
                     </div>
-                    <div className="course-actions">
-                      <button
-                        className="btn btn-secondary ghost"
-                        onClick={() => {
-                          setSelectedCourse(course);
-                          setShowTaskModal(true);
-                        }}
-                      >
-                        Add Task
-                      </button>
-                      <button
-                        className="btn btn-danger ghost"
-                        onClick={() => handleDeleteCourse(course.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
+                    {canModifyCourse(course) && (coursePendingMap[course.id]?.length > 0) && (
+                      <div className="alert" style={{ background: '#fff7ed', border: '1px solid #fb923c', borderRadius: '8px', padding: '10px 12px', marginTop: '10px' }}>
+                        <strong>{coursePendingMap[course.id].length} pending unlock request(s)</strong>
+                        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {coursePendingMap[course.id].map((req) => (
+                            <div key={req.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontWeight: 600 }}>{req.task?.title || 'Task'}</div>
+                                <div style={{ color: '#6b7280', fontSize: '0.9rem' }}>
+                                  {req.student?.display_name || req.student?.email || 'Student'} — {req.reason}
+                                </div>
+                                <div style={{ color: '#9ca3af', fontSize: '0.8rem' }}>
+                                  Requested: {new Date(req.requested_at).toLocaleString()}
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  className="btn btn-success btn-sm"
+                                  onClick={() => handleUpdateUnlockRequest(req.id, 'approved')}
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  className="btn btn-danger btn-sm"
+                                  onClick={() => handleUpdateUnlockRequest(req.id, 'rejected')}
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {canModifyCourse(course) && (
+                      <div className="course-actions">
+                        <button
+                          className="btn btn-secondary ghost"
+                          onClick={() => {
+                            setSelectedCourse(course);
+                            setShowTaskModal(true);
+                          }}
+                        >
+                          Add Task
+                        </button>
+                        <button
+                          className="btn btn-danger ghost"
+                          onClick={() => handleDeleteCourse(course.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                    {!canModifyCourse(course) && (
+                      <div style={{ padding: '10px 0', color: '#6b7280', fontSize: '0.875rem' }}>
+                        View only - Created by another staff member
+                      </div>
+                    )}
                   </div>
                   <Link to={`/admin/courses/${course.id}`} className="btn btn-primary full-width">
                     View Details
@@ -343,7 +496,9 @@ export default function AdminDashboard({ user, profile }) {
                     <div>
                       <h3>{task.title}</h3>
                       {task.description ? (
-                        <p className="course-description">{task.description}</p>
+                        <div className="course-description">
+                          <LinkifyDescription text={task.description} />
+                        </div>
                       ) : (
                         <p className="course-description muted">No description provided</p>
                       )}
@@ -365,7 +520,7 @@ export default function AdminDashboard({ user, profile }) {
                         className="btn btn-danger ghost"
                         onClick={() => handleDeleteQuickTask(task.id)}
                       >
-                        Delete
+                        Remove Task
                       </button>
                     </div>
                   </div>
@@ -645,6 +800,144 @@ export default function AdminDashboard({ user, profile }) {
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Students Modal */}
+      {showStudentsModal && (
+        <div className="modal-overlay" onClick={() => setShowStudentsModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '900px', maxHeight: '90vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3>Registered Students ({students.length})</h3>
+              <button className="btn btn-secondary" onClick={() => setShowStudentsModal(false)}>Close</button>
+            </div>
+            {students.length > 0 ? (
+              <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Department</th>
+                      <th>Year (Badge)</th>
+                      <th>Student ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {students.map(s => (
+                      <tr key={s.id}>
+                        <td>{s.display_name || '—'}</td>
+                        <td>{s.email}</td>
+                        <td>{s.dept || '—'}</td>
+                        <td>{s.badge || '—'}</td>
+                        <td>{s.student_id || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={{ color: '#6b7280', textAlign: 'center', padding: '40px' }}>No students registered</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Staff Modal (Admin/SuperAdmin only) */}
+      {showStaffModal && (profile?.role === 'admin' || profile?.role === 'superadmin') && (
+        <div className="modal-overlay" onClick={() => setShowStaffModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '900px', maxHeight: '90vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3>Registered Staff ({staff.length})</h3>
+              <button className="btn btn-secondary" onClick={() => setShowStaffModal(false)}>Close</button>
+            </div>
+            {staff.length > 0 ? (
+              <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Department</th>
+                      <th>Staff ID</th>
+                      <th>Role</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {staff.map(s => (
+                      <tr key={s.id}>
+                        <td>{s.display_name || '—'}</td>
+                        <td>{s.email}</td>
+                        <td>{s.dept || '—'}</td>
+                        <td>{s.staff_id || '—'}</td>
+                        <td>
+                          <span className={`badge badge-${s.role === 'superadmin' ? 'danger' : s.role === 'admin' ? 'warning' : 'info'}`}>
+                            {s.role}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={{ color: '#6b7280', textAlign: 'center', padding: '40px' }}>No staff registered</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Unlock Requests Modal */}
+      {showUnlockRequestsModal && (
+        <div className="modal-overlay" onClick={() => setShowUnlockRequestsModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '900px', maxHeight: '90vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3>Pending Unlock Requests ({unlockRequests.length})</h3>
+              <button className="btn btn-secondary" onClick={() => setShowUnlockRequestsModal(false)}>Close</button>
+            </div>
+            {unlockRequests.length > 0 ? (
+              <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+                {unlockRequests.map(request => (
+                  <div key={request.id} className="card" style={{ marginBottom: '15px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div style={{ flex: 1 }}>
+                        <h4>{request.task?.title || 'Task'}</h4>
+                        <p style={{ color: '#6b7280', marginTop: '5px' }}>
+                          <strong>Student:</strong> {request.student?.display_name || request.student?.email} ({request.student?.student_id || '—'})
+                        </p>
+                        <p style={{ color: '#6b7280', marginTop: '5px' }}>
+                          <strong>Reason:</strong> {request.reason}
+                        </p>
+                        <p style={{ color: '#6b7280', marginTop: '5px', fontSize: '0.875rem' }}>
+                          Requested: {new Date(request.requested_at).toLocaleString()}
+                        </p>
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', marginLeft: '15px' }}>
+                        <button
+                          className="btn btn-success btn-sm"
+                          onClick={async () => {
+                            await handleUpdateUnlockRequest(request.id, 'approved');
+                          }}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={async () => {
+                            await handleUpdateUnlockRequest(request.id, 'rejected');
+                          }}
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ color: '#6b7280', textAlign: 'center', padding: '40px' }}>No pending unlock requests</p>
+            )}
           </div>
         </div>
       )}

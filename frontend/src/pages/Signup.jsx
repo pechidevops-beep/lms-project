@@ -84,6 +84,19 @@ export default function Signup() {
           localStorage.setItem('supabase.auth.token', signInData.session.access_token);
         }
 
+        // Log the login to database
+        try {
+          await fetch(`${API_URL}/auth/log-login`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${signInData.session.access_token}`,
+              'Content-Type': 'application/json'
+            }
+          });
+        } catch (logError) {
+          console.warn('Failed to log login:', logError);
+        }
+
         // Get profile to determine redirect
         const profileRes = await fetch(`${API_URL}/profile`, {
           headers: {

@@ -2,15 +2,51 @@ import { useState, useEffect, useMemo } from 'react';
 import api from '../lib/api';
 import Layout from '../components/Layout';
 
+// Component to make links clickable in task descriptions
+const LinkifyDescription = ({ text }) => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const parts = text.split(urlRegex);
+  
+  return (
+    <span>
+      {parts.map((part, index) => {
+        if (part.match(urlRegex)) {
+          return (
+            <a
+              key={index}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#3b82f6', textDecoration: 'underline', wordBreak: 'break-all' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                window.open(part, '_blank');
+              }}
+            >
+              {part}
+            </a>
+          );
+        }
+        return <span key={index}>{part}</span>;
+      })}
+    </span>
+  );
+};
+
 export default function SuperAdminDashboard({ user, profile }) {
   const [pendingStaff, setPendingStaff] = useState([]);
   const [students, setStudents] = useState([]);
+  const [staff, setStaff] = useState([]);
+  const [loginHistory, setLoginHistory] = useState([]);
   const [quickTasks, setQuickTasks] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('staff'); // 'staff' or 'quickTasks'
+  const [activeTab, setActiveTab] = useState('staff'); // 'staff', 'quickTasks', or 'users'
   const [message, setMessage] = useState(null);
   const [showQuickTaskModal, setShowQuickTaskModal] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showStudentsModal, setShowStudentsModal] = useState(false);
+  const [showStaffModal, setShowStaffModal] = useState(false);
+  const [showLoginHistoryModal, setShowLoginHistoryModal] = useState(false);
   const [selectedQuickTask, setSelectedQuickTask] = useState(null);
   const [selectedStudents, setSelectedStudents] = useState(new Set());
   const [newQuickTask, setNewQuickTask] = useState({ title: '', description: '' });
@@ -43,6 +79,24 @@ export default function SuperAdminDashboard({ user, profile }) {
       } catch (error) {
         console.error('Error loading students:', error);
         setStudents([]);
+      }
+      
+      // Load staff
+      try {
+        const staffRes = await api.get('/admin/staffs');
+        setStaff(staffRes.data || []);
+      } catch (error) {
+        console.error('Error loading staff:', error);
+        setStaff([]);
+      }
+      
+      // Load login history
+      try {
+        const loginRes = await api.get('/auth/login-history');
+        setLoginHistory(loginRes.data || []);
+      } catch (error) {
+        console.error('Error loading login history:', error);
+        setLoginHistory([]);
       }
       
       // Load quick tasks (handle gracefully if table doesn't exist)
@@ -166,6 +220,37 @@ export default function SuperAdminDashboard({ user, profile }) {
         </div>
       )}
 
+      {/* Stats Cards */}
+      <div className="stats-grid" style={{ marginBottom: '20px' }}>
+        <div 
+          className="stats-card" 
+          style={{ cursor: 'pointer' }}
+          onClick={() => setShowStudentsModal(true)}
+        >
+          <p>Total Students</p>
+          <h3>{students.length}</h3>
+          <span>Click to view registered students</span>
+        </div>
+        <div 
+          className="stats-card" 
+          style={{ cursor: 'pointer' }}
+          onClick={() => setShowStaffModal(true)}
+        >
+          <p>Total Staff</p>
+          <h3>{staff.length}</h3>
+          <span>Click to view registered staff</span>
+        </div>
+        <div 
+          className="stats-card" 
+          style={{ cursor: 'pointer' }}
+          onClick={() => setShowLoginHistoryModal(true)}
+        >
+          <p>Login History</p>
+          <h3>{loginHistory.length}</h3>
+          <span>Click to view and manage</span>
+        </div>
+      </div>
+
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', borderBottom: '2px solid #e5e7eb' }}>
         <button
@@ -263,7 +348,9 @@ export default function SuperAdminDashboard({ user, profile }) {
                     <div>
                       <h3>{task.title}</h3>
                       {task.description ? (
-                        <p className="course-description">{task.description}</p>
+                        <div className="course-description">
+                          <LinkifyDescription text={task.description} />
+                        </div>
                       ) : (
                         <p className="course-description muted">No description provided</p>
                       )}
@@ -285,7 +372,7 @@ export default function SuperAdminDashboard({ user, profile }) {
                         className="btn btn-danger ghost"
                         onClick={() => handleDeleteQuickTask(task.id)}
                       >
-                        Delete
+                        Remove Task
                       </button>
                     </div>
                   </div>
@@ -464,6 +551,151 @@ export default function SuperAdminDashboard({ user, profile }) {
           </div>
         </div>
       )}
+
+      {/* Students Modal */}
+      {showStudentsModal && (
+        <div className="modal-overlay" onClick={() => setShowStudentsModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '900px', maxHeight: '90vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3>Registered Students ({students.length})</h3>
+              <button className="btn btn-secondary" onClick={() => setShowStudentsModal(false)}>Close</button>
+            </div>
+            {students.length > 0 ? (
+              <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Department</th>
+                      <th>Year (Badge)</th>
+                      <th>Student ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {students.map(s => (
+                      <tr key={s.id}>
+                        <td>{s.display_name || '—'}</td>
+                        <td>{s.email}</td>
+                        <td>{s.dept || '—'}</td>
+                        <td>{s.badge || '—'}</td>
+                        <td>{s.student_id || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={{ color: '#6b7280', textAlign: 'center', padding: '40px' }}>No students registered</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Staff Modal */}
+      {showStaffModal && (
+        <div className="modal-overlay" onClick={() => setShowStaffModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '900px', maxHeight: '90vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3>Registered Staff ({staff.length})</h3>
+              <button className="btn btn-secondary" onClick={() => setShowStaffModal(false)}>Close</button>
+            </div>
+            {staff.length > 0 ? (
+              <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Department</th>
+                      <th>Staff ID</th>
+                      <th>Role</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {staff.map(s => (
+                      <tr key={s.id}>
+                        <td>{s.display_name || '—'}</td>
+                        <td>{s.email}</td>
+                        <td>{s.dept || '—'}</td>
+                        <td>{s.staff_id || '—'}</td>
+                        <td>
+                          <span className={`badge badge-${s.role === 'superadmin' ? 'danger' : s.role === 'admin' ? 'warning' : 'info'}`}>
+                            {s.role}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={{ color: '#6b7280', textAlign: 'center', padding: '40px' }}>No staff registered</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Login History Modal */}
+      {showLoginHistoryModal && (
+        <div className="modal-overlay" onClick={() => setShowLoginHistoryModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '1000px', maxHeight: '90vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3>Login History ({loginHistory.length})</h3>
+              <button className="btn btn-secondary" onClick={() => setShowLoginHistoryModal(false)}>Close</button>
+            </div>
+            {loginHistory.length > 0 ? (
+              <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Role</th>
+                      <th>Login Time</th>
+                      <th>IP Address</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loginHistory.map(login => (
+                      <tr key={login.id}>
+                        <td>{login.email}</td>
+                        <td>
+                          <span className={`badge badge-${login.role === 'superadmin' ? 'danger' : login.role === 'admin' ? 'warning' : login.role === 'staff' ? 'info' : 'success'}`}>
+                            {login.role}
+                          </span>
+                        </td>
+                        <td>{new Date(login.login_at).toLocaleString()}</td>
+                        <td>{login.ip_address || '—'}</td>
+                        <td>
+                          <button
+                            className="btn btn-danger btn-sm"
+                            onClick={async () => {
+                              if (!confirm('Are you sure you want to remove this login record?')) return;
+                              try {
+                                await api.delete(`/auth/login-history/${login.id}`);
+                                setMessage({ type: 'success', text: 'Login record removed successfully' });
+                                loadData();
+                              } catch (error) {
+                                setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to remove login record' });
+                              }
+                            }}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={{ color: '#6b7280', textAlign: 'center', padding: '40px' }}>No login history</p>
+            )}
+          </div>
+        </div>
+      )}
+
     </Layout>
   );
 }

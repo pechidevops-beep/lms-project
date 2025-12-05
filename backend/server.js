@@ -10,6 +10,7 @@ import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
 import staffRoutes from './routes/staff.js';
 import tasksRoutes from './routes/tasks.js';
+import enrollmentsRoutes from './routes/enrollments.js';
 import { authenticate, getUserProfile, canAccessCourse } from './middleware.js';
 
 dotenv.config();
@@ -132,6 +133,26 @@ async function isAdmin(user) {
   const profile = await getUserProfile(user.id);
   if (!profile) return false;
   return ['superadmin', 'admin', 'staff'].includes(profile.role);
+}
+
+// Helper: Check if user can modify a course (is creator or superadmin)
+async function canModifyCourse(user, courseId) {
+  if (!user) return false;
+  const profile = await getUserProfile(user.id);
+  if (!profile) return false;
+  
+  // Superadmin can modify any course
+  if (profile.role === 'superadmin') return true;
+  
+  // Check if user is the creator of the course
+  const { data: course, error } = await supabase
+    .from('courses')
+    .select('created_by')
+    .eq('id', courseId)
+    .single();
+  
+  if (error || !course) return false;
+  return course.created_by === user.id;
 }
 
 // Helper: Create audit log
@@ -376,6 +397,11 @@ app.put('/api/courses/:id', async (req, res) => {
     }
 
     const { id } = req.params;
+    
+    // Check if user can modify this course (creator or superadmin)
+    if (!(await canModifyCourse(user, id))) {
+      return res.status(403).json({ error: 'You can only modify courses you created' });
+    }
     const { title, description, code } = req.body;
 
     const { data, error } = await supabase
@@ -402,6 +428,11 @@ app.delete('/api/courses/:id', async (req, res) => {
     }
 
     const { id } = req.params;
+    
+    // Check if user can modify this course (creator or superadmin)
+    if (!(await canModifyCourse(user, id))) {
+      return res.status(403).json({ error: 'You can only delete courses you created' });
+    }
     const { error } = await supabase.from('courses').delete().eq('id', id);
 
     if (error) throw error;
@@ -490,6 +521,11 @@ app.post('/api/courses/:courseId/tasks', async (req, res) => {
     }
 
     const { courseId } = req.params;
+    
+    // Check if user can modify this course (creator or superadmin)
+    if (!(await canModifyCourse(user, courseId))) {
+      return res.status(403).json({ error: 'You can only add tasks to courses you created' });
+    }
     const { title, description, deadline, max_points } = req.body;
 
     const { data, error } = await supabase
@@ -542,6 +578,22 @@ app.put('/api/tasks/:id', async (req, res) => {
     }
 
     const { id } = req.params;
+    
+    // Get task to find course
+    const { data: task, error: taskError } = await supabase
+      .from('tasks')
+      .select('course_id')
+      .eq('id', id)
+      .single();
+    
+    if (taskError || !task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    
+    // Check if user can modify this course (creator or superadmin)
+    if (!(await canModifyCourse(user, task.course_id))) {
+      return res.status(403).json({ error: 'You can only modify tasks in courses you created' });
+    }
     const { title, description, deadline, max_points } = req.body;
 
     const { data, error } = await supabase
@@ -568,6 +620,22 @@ app.delete('/api/tasks/:id', async (req, res) => {
     }
 
     const { id } = req.params;
+    
+    // Get task to find course
+    const { data: task, error: taskError } = await supabase
+      .from('tasks')
+      .select('course_id')
+      .eq('id', id)
+      .single();
+    
+    if (taskError || !task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    
+    // Check if user can modify this course (creator or superadmin)
+    if (!(await canModifyCourse(user, task.course_id))) {
+      return res.status(403).json({ error: 'You can only delete tasks in courses you created' });
+    }
     const { error } = await supabase.from('tasks').delete().eq('id', id);
 
     if (error) throw error;
@@ -657,12 +725,28 @@ app.post('/api/tasks/:taskId/submissions', upload.array('files', 5), async (req,
     // Get task to calculate points based on submission order and gating
     const { data: task } = await supabase
       .from('tasks')
-      .select('max_points, course_id')
+      .select('max_points, course_id, deadline')
       .eq('id', taskId)
       .single();
 
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Check if task is locked (deadline passed)
+    const isPastDeadline = task.deadline && new Date(task.deadline) < new Date();
+    if (isPastDeadline) {
+      // Check if task is unlocked for this student
+      const { data: unlock } = await supabase
+        .from('task_unlocks')
+        .select('id')
+        .eq('task_id', taskId)
+        .eq('student_id', user.id)
+        .single();
+
+      if (!unlock) {
+        return res.status(400).json({ error: 'Task is locked. Deadline has passed. Please request unlock from staff.' });
+      }
     }
 
     const { data: courseTasks } = await supabase
@@ -754,6 +838,38 @@ app.put('/api/submissions/:id/grade', async (req, res) => {
     }
 
     const { id } = req.params;
+    
+    // Get submission to find task and course
+    const { data: submission, error: subError } = await supabase
+      .from('submissions')
+      .select('task_id')
+      .eq('id', id)
+      .single();
+    
+    if (subError || !submission) {
+      return res.status(404).json({ error: 'Submission not found' });
+    }
+    
+    // Get task to find course
+    const { data: task, error: taskError } = await supabase
+      .from('tasks')
+      .select('course_id')
+      .eq('id', submission.task_id)
+      .single();
+    
+    if (taskError || !task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    
+    const courseId = task.course_id;
+    if (!courseId) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+    
+    // Check if user can modify this course (creator or superadmin)
+    if (!(await canModifyCourse(user, courseId))) {
+      return res.status(403).json({ error: 'You can only grade submissions for courses you created' });
+    }
     const { status, points_awarded, feedback } = req.body;
 
     const updateData = {
@@ -778,19 +894,19 @@ app.put('/api/submissions/:id/grade', async (req, res) => {
 
     if (error) throw error;
 
-    // Notify student
-    const { data: submission } = await supabase
-      .from('submissions')
-      .select('student_id, task:tasks!submissions_task_id_fkey(title)')
-      .eq('id', id)
+    // Notify student - get task title for email
+    const { data: taskData } = await supabase
+      .from('tasks')
+      .select('title')
+      .eq('id', submission.task_id)
       .single();
 
-    if (submission) {
-      const { data: student } = await supabase.auth.admin.getUserById(submission.student_id);
+    if (data && data.student_id) {
+      const { data: student } = await supabase.auth.admin.getUserById(data.student_id);
       if (student?.user?.email) {
         await sendEmail(
           student.user.email,
-          `Submission Graded: ${submission.task?.title || 'Task'}`,
+          `Submission Graded: ${taskData?.title || 'Task'}`,
           `<p>Your submission has been graded. Points: ${updateData.points_awarded || data.points_awarded}</p>${feedback ? `<p>Feedback: ${feedback}</p>` : ''}`
         );
       }
@@ -911,6 +1027,374 @@ app.get('/api/audit-logs', async (req, res) => {
 
     if (error) throw error;
     res.json(data || []);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Log user login
+app.post('/api/auth/log-login', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !user) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const profile = await getUserProfile(user.id);
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    // Get IP address and user agent from request
+    const ipAddress = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    const userAgent = req.headers['user-agent'] || '';
+
+    // Log the login
+    const { error: logError } = await supabase.from('login_history').insert({
+      user_id: user.id,
+      email: user.email,
+      role: profile.role,
+      ip_address: ipAddress,
+      user_agent: userAgent
+    });
+
+    if (logError) {
+      console.error('Error logging login:', logError);
+      // Don't fail the login if logging fails
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error in log-login:', error);
+    // Don't fail the login if logging fails
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Get login history (admin only)
+app.get('/api/auth/login-history', authenticate, async (req, res) => {
+  try {
+    const profile = req.profile;
+    if (!['superadmin', 'admin', 'staff'].includes(profile.role)) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { role, limit = 100 } = req.query;
+    let query = supabase
+      .from('login_history')
+      .select('*')
+      .order('login_at', { ascending: false })
+      .limit(parseInt(limit));
+
+    if (role) {
+      query = query.eq('role', role);
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete login history entry (SuperAdmin only)
+app.delete('/api/auth/login-history/:id', authenticate, async (req, res) => {
+  try {
+    const profile = req.profile;
+    if (profile.role !== 'superadmin') {
+      return res.status(403).json({ error: 'SuperAdmin access required' });
+    }
+
+    const { id } = req.params;
+    const { error } = await supabase
+      .from('login_history')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Task Unlock System
+// Request unlock for a task (Student only)
+app.post('/api/tasks/:taskId/unlock-request', authenticate, async (req, res) => {
+  try {
+    const profile = req.profile;
+    if (profile.role !== 'student') {
+      return res.status(403).json({ error: 'Student access required' });
+    }
+
+    const { taskId } = req.params;
+    const { reason } = req.body;
+
+    // Check if task exists and has deadline
+    const { data: task, error: taskError } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('id', taskId)
+      .single();
+
+    if (taskError || !task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Check if deadline has passed
+    if (!task.deadline || new Date(task.deadline) >= new Date()) {
+      return res.status(400).json({ error: 'Task deadline has not passed yet' });
+    }
+
+    // Check if already submitted
+    const { data: existingSubmission } = await supabase
+      .from('submissions')
+      .select('id')
+      .eq('task_id', taskId)
+      .eq('student_id', profile.id)
+      .single();
+
+    if (existingSubmission) {
+      return res.status(400).json({ error: 'Task already submitted' });
+    }
+
+    // Check if already unlocked
+    const { data: existingUnlock } = await supabase
+      .from('task_unlocks')
+      .select('id')
+      .eq('task_id', taskId)
+      .eq('student_id', profile.id)
+      .single();
+
+    if (existingUnlock) {
+      return res.status(400).json({ error: 'Task already unlocked for you' });
+    }
+
+    // Create unlock request
+    const { data, error } = await supabase
+      .from('task_unlock_requests')
+      .insert({
+        task_id: taskId,
+        student_id: profile.id,
+        reason: reason || 'No reason provided'
+      })
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === '23505') {
+        return res.status(400).json({ error: 'Unlock request already exists' });
+      }
+      throw error;
+    }
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get unlock requests (Admin/Staff only - NOT superadmin)
+// Only returns requests for courses created by the current staff member
+app.get('/api/tasks/unlock-requests', authenticate, async (req, res) => {
+  try {
+    const profile = req.profile;
+    if (!['admin', 'staff'].includes(profile.role)) {
+      return res.status(403).json({ error: 'Staff access required' });
+    }
+
+    const { status = 'pending' } = req.query;
+
+    // Check if table exists by trying a simple query first
+    const { data: requests, error: requestsError } = await supabase
+      .from('task_unlock_requests')
+      .select('*')
+      .eq('status', status)
+      .order('requested_at', { ascending: false });
+
+    if (requestsError) {
+      // If table doesn't exist, return empty array
+      if (requestsError.code === '42P01' || requestsError.message?.includes('does not exist')) {
+        return res.json([]);
+      }
+      throw requestsError;
+    }
+
+    if (!requests || requests.length === 0) {
+      return res.json([]);
+    }
+
+    // Fetch related task, course, and student data separately
+    const enrichedRequests = await Promise.all((requests || []).map(async (request) => {
+      const [taskResult, studentResult] = await Promise.all([
+        supabase.from('tasks').select('id, title, course_id').eq('id', request.task_id).single(),
+        supabase.from('profiles').select('id, email, display_name, student_id').eq('id', request.student_id).single()
+      ]);
+
+      const task = taskResult.data;
+      if (!task) {
+        return null;
+      }
+
+      // Get course to check if current staff created it
+      const { data: course, error: courseError } = await supabase
+        .from('courses')
+        .select('id, created_by')
+        .eq('id', task.course_id)
+        .single();
+
+      if (courseError || !course) {
+        return null;
+      }
+
+      // Only include requests for courses created by this staff member
+      if (course.created_by !== profile.id) {
+        return null;
+      }
+
+      return {
+        ...request,
+        task: task,
+        student: studentResult.data || null
+      };
+    }));
+
+    // Filter out null values (requests not for this staff's courses)
+    const filteredRequests = enrichedRequests.filter(req => req !== null);
+
+    res.json(filteredRequests || []);
+  } catch (error) {
+    // If table doesn't exist, return empty array instead of error
+    if (error.code === '42P01' || error.message?.includes('does not exist')) {
+      return res.json([]);
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Approve/Reject unlock request (Admin/Staff only - NOT superadmin)
+app.put('/api/tasks/unlock-requests/:id', authenticate, async (req, res) => {
+  try {
+    const profile = req.profile;
+    if (!['admin', 'staff'].includes(profile.role)) {
+      return res.status(403).json({ error: 'Staff access required' });
+    }
+
+    const { id } = req.params;
+    const { status } = req.body; // 'approved' or 'rejected'
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    // Get the request
+    const { data: request, error: requestError } = await supabase
+      .from('task_unlock_requests')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (requestError || !request) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+
+    // Get task to find course
+    const { data: task, error: taskError } = await supabase
+      .from('tasks')
+      .select('course_id')
+      .eq('id', request.task_id)
+      .single();
+
+    if (taskError || !task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Get course to check if current staff created it
+    const { data: course, error: courseError } = await supabase
+      .from('courses')
+      .select('created_by')
+      .eq('id', task.course_id)
+      .single();
+
+    if (courseError || !course) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    // Only allow course creator to approve/reject unlock requests
+    if (course.created_by !== profile.id) {
+      return res.status(403).json({ error: 'You can only approve/reject unlock requests for courses you created' });
+    }
+
+    // Update request status
+    const { data: updatedRequest, error: updateError } = await supabase
+      .from('task_unlock_requests')
+      .update({
+        status,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: profile.id
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    // If approved, create unlock record
+    if (status === 'approved') {
+      const { error: unlockError } = await supabase
+        .from('task_unlocks')
+        .insert({
+          task_id: request.task_id,
+          student_id: request.student_id,
+          unlocked_by: profile.id,
+          reason: request.reason
+        });
+
+      if (unlockError) {
+        console.error('Error creating unlock:', unlockError);
+        // Don't fail the request update if unlock creation fails
+      }
+    }
+
+    res.json(updatedRequest);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get unlocked tasks for a student
+app.get('/api/tasks/:taskId/unlock-status', authenticate, async (req, res) => {
+  try {
+    const profile = req.profile;
+    const { taskId } = req.params;
+
+    if (profile.role === 'student') {
+      const { data, error } = await supabase
+        .from('task_unlocks')
+        .select('*')
+        .eq('task_id', taskId)
+        .eq('student_id', profile.id)
+        .single();
+
+      if (error && error.code !== 'PGRST116') throw error;
+      res.json({ unlocked: !!data, unlock: data || null });
+    } else {
+      // Admin can see all unlocks for this task
+      const { data, error } = await supabase
+        .from('task_unlocks')
+        .select('*, student:profiles!task_unlocks_student_id_fkey(id, email, display_name)')
+        .eq('task_id', taskId);
+
+      if (error) throw error;
+      res.json({ unlocks: data || [] });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -38,6 +38,14 @@ export default function Login() {
         localStorage.setItem('supabase.auth.token', data.session.access_token);
       }
 
+      // Log the login to database
+      try {
+        await api.post('/auth/log-login');
+      } catch (logError) {
+        console.warn('Failed to log login:', logError);
+        // Don't block login if logging fails
+      }
+
       const profileRes = await api.get('/profile');
       const profile = profileRes.data;
 

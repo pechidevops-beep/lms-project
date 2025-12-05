@@ -5,6 +5,37 @@ import Layout from '../components/Layout';
 
 const isImage = (url = '') => /\.(png|jpe?g|gif|webp|svg)$/i.test(url);
 
+// Component to make links clickable in task descriptions
+const LinkifyDescription = ({ text }) => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const parts = text.split(urlRegex);
+  
+  return (
+    <p>
+      {parts.map((part, index) => {
+        if (part.match(urlRegex)) {
+          return (
+            <a
+              key={index}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#3b82f6', textDecoration: 'underline', wordBreak: 'break-all' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                window.open(part, '_blank');
+              }}
+            >
+              {part}
+            </a>
+          );
+        }
+        return <span key={index}>{part}</span>;
+      })}
+    </p>
+  );
+};
+
 export default function AdminCourseDetail({ user, profile }) {
   const { courseId } = useParams();
   const [course, setCourse] = useState(null);
@@ -15,6 +46,15 @@ export default function AdminCourseDetail({ user, profile }) {
   const [availableQuickTasks, setAvailableQuickTasks] = useState([]);
   const [selectedQuickTask, setSelectedQuickTask] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  // Helper: Check if user can modify this course (is creator or superadmin)
+  const canModifyCourse = () => {
+    if (!course || !user) return false;
+    // Superadmin can modify any course
+    if (profile?.role === 'superadmin') return true;
+    // Staff can only modify courses they created
+    return course.created_by === user.id;
+  };
 
   useEffect(() => {
     loadData();
@@ -78,42 +118,47 @@ export default function AdminCourseDetail({ user, profile }) {
       <div className="card" style={{ marginBottom: '25px' }}>
         <div className="flex-between">
           <h3>Enrolled Students ({enrollments.length})</h3>
-          <div>
-            <select value={selectedQuickTask || ''} onChange={(e) => setSelectedQuickTask(e.target.value || null)}>
-              <option value="">Select Quick Task</option>
-              {availableQuickTasks.map(q => (
-                <option key={q.id} value={q.id}>{q.title}</option>
-              ))}
-            </select>
-            <button
-              className="btn btn-primary"
-              onClick={async () => {
-                if (!selectedQuickTask) return alert('Select a quick task');
-                const ids = Array.from(selectedStudents);
-                try {
-                  await api.post(`/tasks/quick/${selectedQuickTask}/assign`, { student_ids: ids });
-                  alert('Assigned quick task to selected students');
-                } catch (err) {
-                  alert(err.response?.data?.error || 'Failed to assign');
-                }
-              }}
-              style={{ marginLeft: '10px' }}
-            >Assign</button>
-            <button
-              className="btn btn-secondary"
-              onClick={async () => {
-                if (!selectedQuickTask) return alert('Select a quick task');
-                const ids = Array.from(selectedStudents);
-                try {
-                  await api.post(`/tasks/quick/${selectedQuickTask}/unassign`, { student_ids: ids });
-                  alert('Unassigned quick task from selected students');
-                } catch (err) {
-                  alert(err.response?.data?.error || 'Failed to unassign');
-                }
-              }}
-              style={{ marginLeft: '10px' }}
-            >Unassign</button>
-          </div>
+          {canModifyCourse() && (
+            <div>
+              <select value={selectedQuickTask || ''} onChange={(e) => setSelectedQuickTask(e.target.value || null)}>
+                <option value="">Select Quick Task</option>
+                {availableQuickTasks.map(q => (
+                  <option key={q.id} value={q.id}>{q.title}</option>
+                ))}
+              </select>
+              <button
+                className="btn btn-primary"
+                onClick={async () => {
+                  if (!selectedQuickTask) return alert('Select a quick task');
+                  const ids = Array.from(selectedStudents);
+                  try {
+                    await api.post(`/tasks/quick/${selectedQuickTask}/assign`, { student_ids: ids });
+                    alert('Assigned quick task to selected students');
+                  } catch (err) {
+                    alert(err.response?.data?.error || 'Failed to assign');
+                  }
+                }}
+                style={{ marginLeft: '10px' }}
+              >Assign</button>
+              <button
+                className="btn btn-secondary"
+                onClick={async () => {
+                  if (!selectedQuickTask) return alert('Select a quick task');
+                  const ids = Array.from(selectedStudents);
+                  try {
+                    await api.post(`/tasks/quick/${selectedQuickTask}/unassign`, { student_ids: ids });
+                    alert('Unassigned quick task from selected students');
+                  } catch (err) {
+                    alert(err.response?.data?.error || 'Failed to unassign');
+                  }
+                }}
+                style={{ marginLeft: '10px' }}
+              >Unassign</button>
+            </div>
+          )}
+          {!canModifyCourse() && (
+            <p style={{ color: '#6b7280', fontSize: '0.875rem' }}>View only - Created by another staff member</p>
+          )}
         </div>
         {enrollments.length ? (
           <table className="table" style={{ marginTop: '15px' }}>
@@ -159,13 +204,38 @@ export default function AdminCourseDetail({ user, profile }) {
       {tasks.map(task => (
         <div key={task.id} className="card">
           <div className="flex-between">
-            <div>
-              <h3>{task.title}</h3>
-              {task.description && <p style={{ marginTop: '5px' }}>{task.description}</p>}
-              <p style={{ color: '#6b7280', marginTop: '10px' }}>
-                Deadline: {task.deadline ? new Date(task.deadline).toLocaleString() : 'No deadline'}
-                {' | '}Max Points: {task.max_points}
-              </p>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1 }}>
+                  <h3>{task.title}</h3>
+                  {task.description && (
+                    <div style={{ marginTop: '5px' }}>
+                      <LinkifyDescription text={task.description} />
+                    </div>
+                  )}
+                  <p style={{ color: '#6b7280', marginTop: '10px' }}>
+                    Deadline: {task.deadline ? new Date(task.deadline).toLocaleString() : 'No deadline'}
+                    {' | '}Max Points: {task.max_points}
+                  </p>
+                </div>
+                {canModifyCourse() && (
+                  <button
+                    className="btn btn-danger ghost"
+                    onClick={async () => {
+                      if (!confirm('Are you sure you want to delete this task? This action cannot be undone.')) return;
+                      try {
+                        await api.delete(`/tasks/${task.id}`);
+                        loadData();
+                      } catch (error) {
+                        alert(error.response?.data?.error || 'Failed to delete task');
+                      }
+                    }}
+                    style={{ marginLeft: '10px' }}
+                  >
+                    Remove Task
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -223,19 +293,23 @@ export default function AdminCourseDetail({ user, profile }) {
                       </td>
                       <td>{sub.points_awarded}</td>
                       <td>
-                        <button
-                          className="btn btn-success"
-                          style={{ fontSize: '12px', padding: '5px 10px' }}
-                          onClick={() => {
-                            const points = prompt('Enter points:', sub.points_awarded || task.max_points);
-                            const feedback = prompt('Enter feedback (optional):', sub.feedback || '');
-                            if (points !== null) {
-                              handleGradeSubmission(sub.id, 'accepted', parseInt(points), feedback);
-                            }
-                          }}
-                        >
-                          Grade
-                        </button>
+                        {canModifyCourse() ? (
+                          <button
+                            className="btn btn-success"
+                            style={{ fontSize: '12px', padding: '5px 10px' }}
+                            onClick={() => {
+                              const points = prompt('Enter points:', sub.points_awarded || task.max_points);
+                              const feedback = prompt('Enter feedback (optional):', sub.feedback || '');
+                              if (points !== null) {
+                                handleGradeSubmission(sub.id, 'accepted', parseInt(points), feedback);
+                              }
+                            }}
+                          >
+                            Grade
+                          </button>
+                        ) : (
+                          <span style={{ color: '#6b7280', fontSize: '12px' }}>View only</span>
+                        )}
                       </td>
                     </tr>
                   ))}
