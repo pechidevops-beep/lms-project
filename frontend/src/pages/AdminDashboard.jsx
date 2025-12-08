@@ -390,40 +390,6 @@ export default function AdminDashboard({ user, profile }) {
                         <p className="course-description muted">No description provided</p>
                       )}
                     </div>
-                    {canModifyCourse(course) && (coursePendingMap[course.id]?.length > 0) && (
-                      <div className="alert" style={{ background: '#fff7ed', border: '1px solid #fb923c', borderRadius: '8px', padding: '10px 12px', marginTop: '10px' }}>
-                        <strong>{coursePendingMap[course.id].length} pending unlock request(s)</strong>
-                        <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                          {coursePendingMap[course.id].map((req) => (
-                            <div key={req.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ fontWeight: 600 }}>{req.task?.title || 'Task'}</div>
-                                <div style={{ color: '#6b7280', fontSize: '0.9rem' }}>
-                                  {req.student?.display_name || req.student?.email || 'Student'} — {req.reason}
-                                </div>
-                                <div style={{ color: '#9ca3af', fontSize: '0.8rem' }}>
-                                  Requested: {new Date(req.requested_at).toLocaleString()}
-                                </div>
-                              </div>
-                              <div style={{ display: 'flex', gap: '6px' }}>
-                                <button
-                                  className="btn btn-success btn-sm"
-                                  onClick={() => handleUpdateUnlockRequest(req.id, 'approved')}
-                                >
-                                  Approve
-                                </button>
-                                <button
-                                  className="btn btn-danger btn-sm"
-                                  onClick={() => handleUpdateUnlockRequest(req.id, 'rejected')}
-                                >
-                                  Reject
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                     {canModifyCourse(course) && (
                       <div className="course-actions">
                         <button

@@ -4,21 +4,12 @@ import { toast } from 'react-toastify';
 import api from '../lib/api';
 import Layout from '../components/Layout';
 
-// Pending Request Badge Component
-const PendingBadge = () => (
-  <span className="pending-badge">
-    <span className="spinner"></span>
-    Pending
-  </span>
-);
-
 export default function StudentDashboard({ user }) {
   const [courses, setCourses] = useState([]);
-  const [pendingRequests, setPendingRequests] = useState({});
   const [loading, setLoading] = useState(true);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [joinCode, setJoinCode] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isJoiningByCode, setIsJoiningByCode] = useState(false);
   const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
@@ -29,51 +20,16 @@ export default function StudentDashboard({ user }) {
     try {
       setLoading(true);
       setApiError(null);
-      
-      // Get all available courses
-      const coursesRes = await api.get('/courses/available');
-      
-      // Get user's enrollments
-      const enrollmentsRes = await api.get('/enrollments/me');
-      
-      setCourses(coursesRes.data);
-      
-      // Create a map of courseId to enrollment status
-      const requestsMap = {};
-      enrollmentsRes.data.forEach(enrollment => {
-        if (enrollment.status === 'pending') {
-          requestsMap[enrollment.course_id] = 'pending';
-        } else if (enrollment.status === 'approved') {
-          requestsMap[enrollment.course_id] = 'approved';
-        }
-      });
-      setPendingRequests(requestsMap);
+
+      // Students see only courses they are already enrolled in
+      const response = await api.get('/courses');
+      setCourses(response.data || []);
     } catch (error) {
-      console.error('Error loading data:', error);
-      toast.error('Failed to load course data');
+      const message = error.response?.data?.error || 'Failed to load courses';
+      setApiError(message);
+      toast.error(message);
     } finally {
       setLoading(false);
-    }
-  };
-  
-  const handleRequestJoin = async (courseId) => {
-    try {
-      setIsSubmitting(true);
-      setApiError(null);
-      
-      await api.post(`/enrollments/${courseId}/enroll`);
-      
-      setPendingRequests(prev => ({
-        ...prev,
-        [courseId]: 'pending'
-      }));
-      
-      toast.success('Join request sent successfully');
-    } catch (error) {
-      console.error('Error requesting to join course:', error);
-      toast.error(error.response?.data?.error || 'Failed to send join request');
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
@@ -82,17 +38,24 @@ export default function StudentDashboard({ user }) {
     if (!joinCode.trim()) return;
     
     try {
-      setIsSubmitting(true);
-      const response = await api.post('/courses/join', { code: joinCode });
+      setIsJoiningByCode(true);
+      await api.post('/courses/join', { code: joinCode });
       toast.success('Joined course successfully!');
       setJoinCode('');
       setShowJoinModal(false);
       await loadData();
     } catch (error) {
-      console.error('Error joining course:', error);
-      toast.error(error.response?.data?.error || 'Failed to join course');
+      const backendMessage = error.response?.data?.error;
+
+      if (backendMessage === 'Already enrolled') {
+        toast.info('You are already enrolled in this course.');
+        await loadData();
+      } else {
+        const message = backendMessage || 'Failed to join course';
+        toast.error(message);
+      }
     } finally {
-      setIsSubmitting(false);
+      setIsJoiningByCode(false);
     }
   };
 
@@ -113,7 +76,7 @@ export default function StudentDashboard({ user }) {
       <div className="flex-between mb-20">
         <div>
           <h2>My Courses</h2>
-          <p className="text-muted">Browse joined repositories and stay on top of your tasks.</p>
+          <p className="text-muted">Browse your joined courses and stay on top of your tasks.</p>
         </div>
         <button className="btn btn-primary" onClick={() => setShowJoinModal(true)}>
           + Join Course
@@ -131,7 +94,6 @@ export default function StudentDashboard({ user }) {
           courses.map(course => (
             <div key={course.id} className="col-12 col-md-6 col-xl-4">
               <div className="course-card card h-100">
-                {pendingRequests[course.id] === 'pending' && <PendingBadge />}
                 <div className="card-body">
                   <div className="d-flex justify-content-between align-items-start mb-3">
                     <h5 className="card-title mb-0">{course.title}</h5>
@@ -147,29 +109,12 @@ export default function StudentDashboard({ user }) {
                   )}
                   
                   <div className="mt-auto pt-3">
-                    {pendingRequests[course.id] === 'pending' ? (
-                      <button 
-                        className="btn btn-outline-secondary w-100" 
-                        disabled
-                      >
-                        Request Pending
-                      </button>
-                    ) : course.isEnrolled ? (
-                      <Link
-                        to={`/student/courses/${course.id}`}
-                        className="btn btn-primary w-100"
-                      >
-                        View Course
-                      </Link>
-                    ) : (
-                      <button
-                        onClick={() => handleRequestJoin(course.id)}
-                        className="btn btn-outline-primary w-100"
-                        disabled={isSubmitting}
-                      >
-                        {isSubmitting ? 'Processing...' : 'Request to Join'}
-                      </button>
-                    )}
+                    <Link
+                      to={`/student/courses/${course.id}`}
+                      className="btn btn-primary w-100"
+                    >
+                      View Course
+                    </Link>
                   </div>
                 </div>
               </div>
@@ -178,8 +123,8 @@ export default function StudentDashboard({ user }) {
         ) : (
           <div className="col-12">
             <div className="empty-state">
-              <h3>No courses available</h3>
-              <p>Join a course using the button above or wait to be enrolled by an administrator.</p>
+              <h3>No courses joined yet</h3>
+              <p>Use the button above to join a course using its code.</p>
               <button 
                 onClick={() => setShowJoinModal(true)}
                 className="btn btn-primary"
@@ -220,7 +165,7 @@ export default function StudentDashboard({ user }) {
                   value={joinCode}
                   onChange={(e) => setJoinCode(e.target.value)}
                   required
-                  disabled={isSubmitting}
+                  disabled={isJoiningByCode}
                 />
                 <div className="form-text">The code is usually a combination of the course code and term.</div>
               </div>
@@ -230,16 +175,16 @@ export default function StudentDashboard({ user }) {
                   type="button"
                   className="btn btn-outline-secondary"
                   onClick={() => setShowJoinModal(false)}
-                  disabled={isSubmitting}
+                  disabled={isJoiningByCode}
                 >
                   Cancel
                 </button>
                 <button 
                   type="submit" 
                   className="btn btn-primary"
-                  disabled={isSubmitting || !joinCode.trim()}
+                  disabled={isJoiningByCode || !joinCode.trim()}
                 >
-                  {isSubmitting ? (
+                  {isJoiningByCode ? (
                     <>
                       <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                       Joining...
